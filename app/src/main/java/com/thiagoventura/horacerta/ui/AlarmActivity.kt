@@ -1,6 +1,9 @@
 package com.thiagoventura.horacerta.ui
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -39,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -53,7 +57,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import androidx.core.content.ContextCompat
 import com.thiagoventura.horacerta.HoraCertaApplication
+import com.thiagoventura.horacerta.alarm.ActiveAlarmStore
+import com.thiagoventura.horacerta.alarm.AlarmContract
 import com.thiagoventura.horacerta.alarm.AlarmPayload
 import com.thiagoventura.horacerta.alarm.AlarmRingingService
 import com.thiagoventura.horacerta.alarm.putPayload
@@ -63,6 +70,21 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 class AlarmActivity : ComponentActivity() {
+    private lateinit var activeAlarmStore: ActiveAlarmStore
+    private val activePayloadsState = mutableStateOf<List<AlarmPayload>>(emptyList())
+    private var activeAlarmReceiverRegistered = false
+    private val activeAlarmReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (
+                intent?.action == AlarmContract.ACTION_ACTIVE_ALARMS_CHANGED &&
+                ::activeAlarmStore.isInitialized
+            ) {
+                val payloads = activeAlarmStore.payloads()
+                if (payloads.isNotEmpty()) activePayloadsState.value = payloads
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -90,29 +112,67 @@ class AlarmActivity : ComponentActivity() {
             finish()
             return
         }
+        activeAlarmStore = ActiveAlarmStore(this)
+        activeAlarmStore.add(payload)
+        ContextCompat.registerReceiver(
+            this,
+            activeAlarmReceiver,
+            IntentFilter(AlarmContract.ACTION_ACTIVE_ALARMS_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        activeAlarmReceiverRegistered = true
+        refreshActivePayloads(payload)
         val app = application as HoraCertaApplication
 
         setContent {
             HoraCertaTheme {
                 BackHandler(enabled = true) { }
                 AlarmScreen(
-                    payload = payload,
+                    payloads = activePayloadsState.value,
                     onConfirm = {
                         stopAlarm()
-                        app.alarmScheduler.scheduleSnooze(payload)
-                        runCatching { app.repository.incrementSnooze(payload.occurrenceId) }
-                        startActivity(Intent(this, ConfirmDoseActivity::class.java).apply { putPayload(payload) })
+                        val fallback = activePayloadsState.value.firstOrNull() ?: payload
+                        startActivity(Intent(this, ConfirmDoseActivity::class.java).apply {
+                            putPayload(fallback)
+                            putExtra(AlarmContract.EXTRA_USE_ACTIVE_GROUP, true)
+                        })
                         finish()
                     },
                     onSnooze = {
                         stopAlarm()
-                        app.alarmScheduler.scheduleSnooze(payload)
-                        runCatching { app.repository.incrementSnooze(payload.occurrenceId) }
+                        val activePayloads = activePayloadsState.value.ifEmpty { listOf(payload) }
+                        activePayloads.forEach { active ->
+                            app.alarmScheduler.scheduleSnooze(active)
+                            runCatching { app.repository.incrementSnooze(active.occurrenceId) }
+                        }
+                        activeAlarmStore.removeAll(activePayloads.map(AlarmPayload::occurrenceId))
                         finishAndRemoveTask()
                     },
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.toPayload()?.let { payload ->
+            if (!::activeAlarmStore.isInitialized) activeAlarmStore = ActiveAlarmStore(this)
+            activeAlarmStore.add(payload)
+            refreshActivePayloads(payload)
+        }
+    }
+
+    override fun onDestroy() {
+        if (activeAlarmReceiverRegistered) {
+            unregisterReceiver(activeAlarmReceiver)
+            activeAlarmReceiverRegistered = false
+        }
+        super.onDestroy()
+    }
+
+    private fun refreshActivePayloads(fallback: AlarmPayload) {
+        activePayloadsState.value = activeAlarmStore.payloads().ifEmpty { listOf(fallback) }
     }
 
     private fun stopAlarm() {
@@ -122,10 +182,12 @@ class AlarmActivity : ComponentActivity() {
 
 @Composable
 private fun AlarmScreen(
-    payload: AlarmPayload,
+    payloads: List<AlarmPayload>,
     onConfirm: () -> Unit,
     onSnooze: () -> Unit,
 ) {
+    val payload = payloads.firstOrNull() ?: return
+    val grouped = payloads.size > 1
     val time = Instant.ofEpochMilli(payload.scheduledAt)
         .atZone(ZoneId.systemDefault())
         .format(DateTimeFormatter.ofPattern("HH:mm"))
@@ -140,45 +202,49 @@ private fun AlarmScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.height(14.dp))
-        PulsingAlarmGraphic(Modifier.fillMaxWidth().height(220.dp))
+        PulsingAlarmGraphic(Modifier.fillMaxWidth().height(if (grouped) 145.dp else 220.dp))
         Text(
             time,
             color = Color.White,
-            fontSize = 108.sp,
-            lineHeight = 110.sp,
+            fontSize = if (grouped) 78.sp else 108.sp,
+            lineHeight = if (grouped) 82.sp else 110.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = (-4).sp,
         )
         Text(
-            "Hora do medicamento",
+            if (grouped) "${payloads.size} medicamentos agora" else "Hora do medicamento",
             color = Color.White,
-            fontSize = 28.sp,
+            fontSize = if (grouped) 31.sp else 28.sp,
             lineHeight = 34.sp,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(50.dp))
-        Text(
-            payload.medicationName,
-            color = Color.White,
-            fontSize = 42.sp,
-            lineHeight = 47.sp,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Spacer(Modifier.height(5.dp))
-        Text(
-            payload.dosage.ifBlank { "Dose programada" },
-            color = Color.White.copy(alpha = .72f),
-            fontSize = 25.sp,
-            lineHeight = 30.sp,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(if (grouped) 20.dp else 50.dp))
+        if (grouped) {
+            GroupedAlarmList(payloads, Modifier.weight(1f))
+        } else {
+            Text(
+                payload.medicationName,
+                color = Color.White,
+                fontSize = 42.sp,
+                lineHeight = 47.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(5.dp))
+            Text(
+                payload.dosage.ifBlank { "Dose programada" },
+                color = Color.White.copy(alpha = .72f),
+                fontSize = 25.sp,
+                lineHeight = 30.sp,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.weight(1f))
+        }
         AlarmActionButton(
-            text = "Desligar e confirmar",
+            text = if (grouped) "Desligar e revisar" else "Desligar e confirmar",
             icon = { Icon(Icons.Rounded.Check, null, modifier = Modifier.size(28.dp)) },
             filled = true,
             onClick = onConfirm,
@@ -192,13 +258,69 @@ private fun AlarmScreen(
         )
         Spacer(Modifier.height(25.dp))
         Text(
-            "O lembrete continuará até você confirmar",
+            if (grouped) "As doses não confirmadas voltarão em 15 minutos" else "O lembrete continuará até você confirmar",
             color = Color.White,
             fontSize = 16.sp,
             lineHeight = 20.sp,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(14.dp))
+    }
+}
+
+@Composable
+private fun GroupedAlarmList(payloads: List<AlarmPayload>, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = .12f), RoundedCornerShape(20.dp))
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+    ) {
+        payloads.take(4).forEachIndexed { index, payload ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(34.dp)
+                        .background(Color.White.copy(alpha = .18f), RoundedCornerShape(11.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("${index + 1}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                }
+                Spacer(Modifier.size(13.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        payload.medicationName,
+                        color = Color.White,
+                        fontSize = 22.sp,
+                        lineHeight = 25.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        payload.dosage.ifBlank { "Dose programada" },
+                        color = Color.White.copy(alpha = .72f),
+                        fontSize = 16.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+        if (payloads.size > 4) {
+            Text(
+                "+ ${payloads.size - 4} medicamentos",
+                modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp),
+                color = Color.White.copy(alpha = .78f),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
     }
 }
 

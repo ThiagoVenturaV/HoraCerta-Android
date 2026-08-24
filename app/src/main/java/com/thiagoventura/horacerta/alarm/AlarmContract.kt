@@ -7,7 +7,9 @@ object AlarmContract {
     const val EXTRA_SCHEDULED_AT = "scheduled_at"
     const val EXTRA_SOUND = "sound"
     const val EXTRA_VIBRATION = "vibration"
+    const val EXTRA_USE_ACTIVE_GROUP = "use_active_group"
     const val ACTION_STOP_RINGING = "com.thiagoventura.horacerta.STOP_RINGING"
+    const val ACTION_ACTIVE_ALARMS_CHANGED = "com.thiagoventura.horacerta.ACTIVE_ALARMS_CHANGED"
     const val SNOOZE_MINUTES = 15L
 }
 

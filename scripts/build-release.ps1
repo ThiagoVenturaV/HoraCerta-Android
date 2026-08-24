@@ -18,10 +18,9 @@ try {
     New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
     Copy-Item `
         -LiteralPath (Join-Path $projectRoot 'app\build\outputs\apk\release\app-release.apk') `
-        -Destination (Join-Path $releaseDirectory 'HoraCerta-v0.1.0.apk') `
+        -Destination (Join-Path $releaseDirectory 'HoraCerta-v0.1.1.apk') `
         -Force
-    Write-Host "APK pronto em $releaseDirectory\HoraCerta-v0.1.0.apk"
+    Write-Host "APK pronto em $releaseDirectory\HoraCerta-v0.1.1.apk"
 } finally {
     Pop-Location
 }
-

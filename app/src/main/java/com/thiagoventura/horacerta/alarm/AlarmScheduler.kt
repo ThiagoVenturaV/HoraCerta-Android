@@ -64,6 +64,7 @@ class AlarmScheduler(private val context: Context) {
     fun cancel(occurrenceId: Long) {
         alarmManager.cancel(alarmPendingIntent(occurrenceId, null, PendingIntent.FLAG_UPDATE_CURRENT))
         protectedPreferences.edit().remove(keyFor(occurrenceId)).apply()
+        ActiveAlarmStore(context).remove(occurrenceId)
     }
 
     fun restoreFromDeviceProtectedMirror() {

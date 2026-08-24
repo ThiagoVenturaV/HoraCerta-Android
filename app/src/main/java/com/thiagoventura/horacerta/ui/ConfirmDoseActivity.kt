@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Check
@@ -55,6 +57,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.thiagoventura.horacerta.HoraCertaApplication
 import com.thiagoventura.horacerta.MainActivity
+import com.thiagoventura.horacerta.alarm.ActiveAlarmStore
+import com.thiagoventura.horacerta.alarm.AlarmConfirmationPlan
+import com.thiagoventura.horacerta.alarm.AlarmContract
 import com.thiagoventura.horacerta.alarm.AlarmPayload
 import com.thiagoventura.horacerta.alarm.AlarmScheduler
 import com.thiagoventura.horacerta.alarm.toPayload
@@ -84,23 +89,60 @@ class ConfirmDoseActivity : ComponentActivity() {
             return
         }
         val app = application as HoraCertaApplication
+        val activeAlarmStore = ActiveAlarmStore(this)
+        val useActiveGroup = intent.getBooleanExtra(AlarmContract.EXTRA_USE_ACTIVE_GROUP, false)
+        if (useActiveGroup) activeAlarmStore.add(payload)
+        val payloads = if (useActiveGroup) {
+            activeAlarmStore.payloads().ifEmpty { listOf(payload) }
+        } else {
+            listOf(payload)
+        }
 
         setContent {
             HoraCertaTheme {
-                ConfirmDoseScreen(
-                    payload = payload,
-                    onBack = { returnToApp() },
-                    onConfirmed = {
-                        runCatching { app.repository.markTaken(payload.occurrenceId, true) }
-                        app.alarmScheduler.cancel(payload.occurrenceId)
-                        returnToApp()
-                    },
-                    onNotYet = {
-                        app.alarmScheduler.scheduleSnooze(payload)
-                        runCatching { app.repository.incrementSnooze(payload.occurrenceId) }
-                        returnToApp()
-                    },
-                )
+                if (payloads.size == 1) {
+                    ConfirmDoseScreen(
+                        payload = payload,
+                        onBack = { returnToApp() },
+                        onConfirmed = {
+                            runCatching { app.repository.markTaken(payload.occurrenceId, true) }
+                            app.alarmScheduler.cancel(payload.occurrenceId)
+                            returnToApp()
+                        },
+                        onNotYet = {
+                            app.alarmScheduler.scheduleSnooze(payload)
+                            runCatching { app.repository.incrementSnooze(payload.occurrenceId) }
+                            if (useActiveGroup) activeAlarmStore.remove(payload.occurrenceId)
+                            returnToApp()
+                        },
+                    )
+                } else {
+                    GroupedConfirmDoseScreen(
+                        payloads = payloads,
+                        onBack = { returnToApp() },
+                        onConfirmed = { confirmedIds ->
+                            val plan = AlarmConfirmationPlan.create(payloads, confirmedIds)
+                            plan.confirmed.forEach { confirmed ->
+                                runCatching { app.repository.markTaken(confirmed.occurrenceId, true) }
+                                app.alarmScheduler.cancel(confirmed.occurrenceId)
+                            }
+                            plan.snoozed.forEach { snoozed ->
+                                app.alarmScheduler.scheduleSnooze(snoozed)
+                                runCatching { app.repository.incrementSnooze(snoozed.occurrenceId) }
+                            }
+                            activeAlarmStore.removeAll(payloads.map(AlarmPayload::occurrenceId))
+                            returnToApp()
+                        },
+                        onNotYet = {
+                            payloads.forEach { active ->
+                                app.alarmScheduler.scheduleSnooze(active)
+                                runCatching { app.repository.incrementSnooze(active.occurrenceId) }
+                            }
+                            activeAlarmStore.removeAll(payloads.map(AlarmPayload::occurrenceId))
+                            returnToApp()
+                        },
+                    )
+                }
             }
         }
     }
@@ -110,6 +152,127 @@ class ConfirmDoseActivity : ComponentActivity() {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
         })
         finish()
+    }
+}
+
+@Composable
+private fun GroupedConfirmDoseScreen(
+    payloads: List<AlarmPayload>,
+    onBack: () -> Unit,
+    onConfirmed: (Set<Long>) -> Unit,
+    onNotYet: () -> Unit,
+) {
+    var confirmedIds by remember(payloads) { mutableStateOf(emptySet<Long>()) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Ivory)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(horizontal = 18.dp),
+    ) {
+        Row(Modifier.fillMaxWidth().height(82.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack, modifier = Modifier.size(54.dp)) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Voltar", tint = CobaltDark, modifier = Modifier.size(34.dp))
+            }
+            Spacer(Modifier.size(18.dp))
+            Text("Confirmar doses", color = Ink, fontSize = 29.sp, fontWeight = FontWeight.Bold)
+        }
+        Text(
+            "Quais medicamentos você tomou?",
+            color = Ink,
+            fontSize = 27.sp,
+            lineHeight = 32.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Marque cada dose tomada. As demais serão lembradas novamente em 15 minutos.",
+            color = Color(0xFF244D70),
+            fontSize = 17.sp,
+            lineHeight = 23.sp,
+        )
+        Spacer(Modifier.height(18.dp))
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+        ) {
+            items(payloads, key = { it.occurrenceId }) { payload ->
+                val selected = payload.occurrenceId in confirmedIds
+                GroupedDoseCard(
+                    payload = payload,
+                    selected = selected,
+                    onClick = {
+                        confirmedIds = if (selected) {
+                            confirmedIds - payload.occurrenceId
+                        } else {
+                            confirmedIds + payload.occurrenceId
+                        }
+                    },
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        ConfirmActionButton(
+            text = if (confirmedIds.isEmpty()) "Selecione as doses tomadas" else "Confirmar ${confirmedIds.size} ${if (confirmedIds.size == 1) "dose" else "doses"}",
+            filled = true,
+            enabled = confirmedIds.isNotEmpty(),
+            onClick = { onConfirmed(confirmedIds) },
+        )
+        Spacer(Modifier.height(13.dp))
+        ConfirmActionButton("Adiar todas 15 min", false, onClick = onNotYet)
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun GroupedDoseCard(
+    payload: AlarmPayload,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (selected) Color(0xFFE2EEFF) else Color.White, shape)
+            .border(if (selected) 2.dp else 1.dp, if (selected) Color(0xFF0757CF) else Color(0xFFD7DEE8), shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 17.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(42.dp)
+                .background(if (selected) Color(0xFF0757CF) else Color.Transparent, CircleShape)
+                .border(2.dp, Color(0xFF0757CF), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (selected) {
+                Icon(Icons.Rounded.Check, "Dose tomada", tint = Color.White, modifier = Modifier.size(27.dp))
+            }
+        }
+        Spacer(Modifier.size(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                payload.medicationName,
+                color = Ink,
+                fontSize = 22.sp,
+                lineHeight = 26.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                "${payload.dosage.ifBlank { "Dose programada" }} • ${payload.scheduledAt.asTime()}",
+                color = Color(0xFF244D70),
+                fontSize = 16.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -244,14 +407,21 @@ private fun ConfirmClock(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ConfirmActionButton(text: String, filled: Boolean, onClick: () -> Unit) {
+private fun ConfirmActionButton(
+    text: String,
+    filled: Boolean,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
     val shape = RoundedCornerShape(13.dp)
+    val alpha = if (enabled) 1f else .45f
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(66.dp)
             .then(if (filled) Modifier.background(BlueGradient, shape) else Modifier.border(2.dp, Color(0xFF0757CF), shape))
-            .clickable(onClick = onClick),
+            .graphicsLayer { this.alpha = alpha }
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {

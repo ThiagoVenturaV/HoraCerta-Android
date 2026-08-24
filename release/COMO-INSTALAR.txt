@@ -1,6 +1,6 @@
-HORA CERTA v0.1.0
+HORA CERTA v0.1.1
 
-1. Envie HoraCerta-v0.1.0.apk para o celular Android.
+1. Envie HoraCerta-v0.1.1.apk para o celular Android.
 2. Abra o arquivo no celular.
 3. Se o Android solicitar, autorize "Instalar apps desconhecidos" para o aplicativo usado para abrir o APK.
 4. Toque em Instalar.
@@ -10,4 +10,3 @@ HORA CERTA v0.1.0
 Requisito minimo: Android 8.0 (API 26).
 
 Em alguns aparelhos Xiaomi, Samsung, Motorola e Realme, confira tambem se o Hora Certa esta liberado na configuracao de bateria/execucao em segundo plano. O Android pode aplicar restricoes extras definidas pelo fabricante.
-

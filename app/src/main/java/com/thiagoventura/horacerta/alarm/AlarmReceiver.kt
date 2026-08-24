@@ -8,6 +8,7 @@ import androidx.core.content.ContextCompat
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         intent.toPayload()?.let { payload ->
+            ActiveAlarmStore(context).add(payload)
             // A próxima repetição já fica armada. Confirmar a dose é a única ação
             // que cancela esse ciclo; ignorar a tela também repete em 15 minutos.
             AlarmScheduler(context).scheduleSnooze(payload)

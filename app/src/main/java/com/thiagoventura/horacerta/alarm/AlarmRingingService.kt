@@ -23,6 +23,8 @@ class AlarmRingingService : Service() {
     private var ringtone: Ringtone? = null
     private var vibrator: Vibrator? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var vibrationActive = false
+    private val activeAlarmStore by lazy { ActiveAlarmStore(this) }
 
     override fun onCreate() {
         super.onCreate()
@@ -36,39 +38,44 @@ class AlarmRingingService : Service() {
         }
 
         val payload = intent?.toPayload() ?: return START_NOT_STICKY
-        ringtone?.stop()
-        vibrator?.cancel()
+        activeAlarmStore.add(payload)
+        sendBroadcast(Intent(AlarmContract.ACTION_ACTIVE_ALARMS_CHANGED).setPackage(packageName))
+        val payloads = activeAlarmStore.payloads().ifEmpty { listOf(payload) }
         acquireWakeLock()
-        startForeground(NOTIFICATION_ID, buildNotification(payload))
-        if (payload.sound) startSound()
-        if (payload.vibration) startVibration()
+        startForeground(NOTIFICATION_ID, buildNotification(payloads))
+        if (payloads.any(AlarmPayload::sound) && ringtone?.isPlaying != true) startSound()
+        if (payloads.any(AlarmPayload::vibration) && !vibrationActive) startVibration()
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         ringtone?.stop()
         vibrator?.cancel()
+        vibrationActive = false
         if (wakeLock?.isHeld == true) wakeLock?.release()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun buildNotification(payload: AlarmPayload): Notification {
+    private fun buildNotification(payloads: List<AlarmPayload>): Notification {
+        val payload = payloads.first()
+        val count = payloads.size
         val alarmIntent = Intent(this, AlarmActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putPayload(payload)
+            putExtra(AlarmContract.EXTRA_USE_ACTIVE_GROUP, true)
         }
         val fullScreenPendingIntent = PendingIntent.getActivity(
             this,
-            payload.occurrenceId.toInt(),
+            NOTIFICATION_ID,
             alarmIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setContentTitle("Hora do medicamento")
-            .setContentText("${payload.medicationName} • ${payload.dosage}")
+            .setContentTitle(if (count == 1) "Hora do medicamento" else "Hora de $count medicamentos")
+            .setContentText(notificationText(payloads))
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -101,6 +108,17 @@ class AlarmRingingService : Service() {
         }
         val pattern = longArrayOf(0, 700, 350, 700, 700)
         vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
+        vibrationActive = true
+    }
+
+    private fun notificationText(payloads: List<AlarmPayload>): String {
+        if (payloads.size == 1) {
+            val payload = payloads.first()
+            return "${payload.medicationName} • ${payload.dosage}"
+        }
+        val visibleNames = payloads.take(3).joinToString(", ", transform = AlarmPayload::medicationName)
+        val remaining = payloads.size - 3
+        return if (remaining > 0) "$visibleNames e mais $remaining" else visibleNames
     }
 
     private fun acquireWakeLock() {

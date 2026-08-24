@@ -16,7 +16,7 @@ Aplicativo Android nativo para organizar medicamentos, criar alarmes exatos e ac
 
 ## APK pronto
 
-O artefato assinado é gerado em `release/HoraCerta-v0.1.0.apk`.
+O artefato assinado é gerado em `release/HoraCerta-v0.1.1.apk`.
 
 Para instalar manualmente, transfira o arquivo para o celular, abra-o e autorize a instalação de apps desconhecidos para o aplicativo usado na abertura do arquivo. Na primeira execução, conclua as permissões de notificações, alarmes exatos e tela cheia.
 
