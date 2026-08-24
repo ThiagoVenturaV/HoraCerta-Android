@@ -1,0 +1,17 @@
+.gradle/
+.idea/
+.android-sdk/
+.android-avd/
+.android-user/
+.android-user-home/
+.gradle-user-home/
+.kotlin/
+.tooling/
+local.properties
+**/build/
+signing/horacerta-release.jks
+signing/keystore.properties
+release/*.apk
+qa/
+landing-site/
+*.iml
