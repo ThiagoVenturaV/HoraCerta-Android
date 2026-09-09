@@ -23,6 +23,11 @@ data class Medication(
     val sound: Boolean = true,
     val vibration: Boolean = true,
     val active: Boolean = true,
+    val inventoryEnabled: Boolean = false,
+    val stockQuantity: Int = 0,
+    val unitsPerDose: Int = 1,
+    val lowStockThreshold: Int = 5,
+    val stockUnit: String = "unidades",
 ) {
     fun isScheduledOn(dayOfWeek: DayOfWeek): Boolean {
         val bit = 1 shl (dayOfWeek.value - 1)
@@ -41,6 +46,7 @@ data class DoseOccurrence(
     val status: DoseStatus,
     val takenAt: Long?,
     val snoozeCount: Int,
+    val inventoryConsumed: Int = 0,
 )
 
 data class DoseWithMedication(

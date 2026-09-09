@@ -11,12 +11,13 @@ Aplicativo Android nativo para organizar medicamentos, criar alarmes exatos e ac
 - soneca automática a cada 15 minutos até a confirmação;
 - restauração dos alarmes após reiniciar o celular;
 - confirmação reversível para corrigir toques acidentais;
+- estoque opcional por medicamento, com baixa por dose, alerta de estoque baixo e reposição rápida;
 - lista diária, calendário e sequência de dias sem doses perdidas;
 - armazenamento local em SQLite.
 
 ## APK pronto
 
-O artefato assinado é gerado em `release/HoraCerta-v0.1.1.apk`.
+O artefato assinado é gerado em `release/HoraCerta-v0.2.0.apk`.
 
 Para instalar manualmente, transfira o arquivo para o celular, abra-o e autorize a instalação de apps desconhecidos para o aplicativo usado na abertura do arquivo. Na primeira execução, conclua as permissões de notificações, alarmes exatos e tela cheia.
 

@@ -6,8 +6,11 @@ import android.content.Context
 import android.content.DialogInterface
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -38,6 +41,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.DropdownMenu
@@ -61,8 +65,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.thiagoventura.horacerta.data.Medication
@@ -85,7 +91,7 @@ fun MedicationEditorScreen(
     var dosage by remember(medication?.id) { mutableStateOf(medication?.dosage.orEmpty()) }
     var kind by remember(medication?.id) { mutableStateOf(medication?.scheduleKind ?: ScheduleKind.FIXED_TIMES) }
     var times by remember(medication?.id) { mutableStateOf(medication?.timesMinutes ?: emptyList()) }
-    var timeInput by remember(medication?.id) { mutableStateOf("") }
+    var timeInput by remember(medication?.id) { mutableStateOf(TextFieldValue("")) }
     var interval by remember(medication?.id) { mutableIntStateOf(medication?.intervalHours ?: 8) }
     var firstTime by remember(medication?.id) {
         mutableStateOf(medication?.let { formatTime(Instant.ofEpochMilli(it.firstDoseAt).atZone(ZoneId.systemDefault()).toLocalTime()) } ?: "08:00")
@@ -98,6 +104,11 @@ fun MedicationEditorScreen(
     }
     var daysMask by remember(medication?.id) { mutableIntStateOf(medication?.daysMask ?: Medication.ALL_DAYS_MASK) }
     var soundAndVibration by remember(medication?.id) { mutableStateOf(medication?.let { it.sound || it.vibration } ?: true) }
+    var inventoryEnabled by remember(medication?.id) { mutableStateOf(medication?.inventoryEnabled ?: false) }
+    var stockQuantity by remember(medication?.id) { mutableStateOf((medication?.stockQuantity ?: 0).toString()) }
+    var unitsPerDose by remember(medication?.id) { mutableStateOf((medication?.unitsPerDose ?: 1).toString()) }
+    var lowStockThreshold by remember(medication?.id) { mutableStateOf((medication?.lowStockThreshold ?: 5).toString()) }
+    var stockUnit by remember(medication?.id) { mutableStateOf(medication?.stockUnit ?: "unidades") }
     var message by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
 
@@ -176,6 +187,19 @@ fun MedicationEditorScreen(
                 },
             )
 
+            InventoryPanel(
+                enabled = inventoryEnabled,
+                onEnabledChange = { inventoryEnabled = it; message = null },
+                stockQuantity = stockQuantity,
+                onStockQuantityChange = { stockQuantity = normalizeWholeNumber(it); message = null },
+                unitsPerDose = unitsPerDose,
+                onUnitsPerDoseChange = { unitsPerDose = normalizeWholeNumber(it); message = null },
+                lowStockThreshold = lowStockThreshold,
+                onLowStockThresholdChange = { lowStockThreshold = normalizeWholeNumber(it); message = null },
+                stockUnit = stockUnit,
+                onStockUnitChange = { stockUnit = it.take(24); message = null },
+            )
+
             Row(Modifier.fillMaxWidth().height(64.dp).border(1.dp, Color(0xFFD7D5D2), RoundedCornerShape(13.dp)).padding(horizontal = 15.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(40.dp).background(CobaltSoft, CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Alarm, null, tint = Ink) }
                 Spacer(Modifier.size(14.dp))
@@ -214,6 +238,11 @@ fun MedicationEditorScreen(
                     sound = soundAndVibration,
                     vibration = soundAndVibration,
                     active = medication?.active ?: true,
+                    inventoryEnabled = inventoryEnabled,
+                    stockQuantity = stockQuantity.toIntOrNull() ?: 0,
+                    unitsPerDose = unitsPerDose.toIntOrNull() ?: 1,
+                    lowStockThreshold = lowStockThreshold.toIntOrNull() ?: 5,
+                    stockUnit = stockUnit.trim().ifBlank { "unidades" },
                 )
                 message = when {
                     name.isBlank() -> "Informe o nome do medicamento."
@@ -221,6 +250,10 @@ fun MedicationEditorScreen(
                     kind == ScheduleKind.FIXED_TIMES && times.isEmpty() -> "Adicione pelo menos um horário."
                     kind == ScheduleKind.FIXED_TIMES && daysMask == 0 -> "Selecione ao menos um dia."
                     kind == ScheduleKind.INTERVAL && first == null -> "Informe um horário inicial válido."
+                    inventoryEnabled && stockQuantity.toIntOrNull() == null -> "Informe a quantidade disponível no estoque."
+                    inventoryEnabled && (unitsPerDose.toIntOrNull() ?: 0) < 1 -> "Informe quantas unidades são usadas por dose."
+                    inventoryEnabled && lowStockThreshold.toIntOrNull() == null -> "Informe quando o estoque deve ser considerado baixo."
+                    inventoryEnabled && stockUnit.isBlank() -> "Informe a unidade do estoque."
                     medication == null -> ScheduleValidator.newScheduleError(candidate)
                     else -> null
                 }
@@ -229,6 +262,114 @@ fun MedicationEditorScreen(
                 }
             },
             modifier = Modifier.fillMaxWidth().padding(horizontal = 19.dp, vertical = 10.dp),
+        )
+    }
+}
+
+@Composable
+private fun InventoryPanel(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    stockQuantity: String,
+    onStockQuantityChange: (String) -> Unit,
+    unitsPerDose: String,
+    onUnitsPerDoseChange: (String) -> Unit,
+    lowStockThreshold: String,
+    onLowStockThresholdChange: (String) -> Unit,
+    stockUnit: String,
+    onStockUnitChange: (String) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .border(1.dp, Color(0xFFD7D5D2), RoundedCornerShape(13.dp))
+            .padding(horizontal = 15.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().height(64.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(40.dp).background(CobaltSoft, CircleShape), contentAlignment = Alignment.Center) {
+                Icon(Icons.Rounded.Inventory2, null, tint = Cobalt, modifier = Modifier.size(23.dp))
+            }
+            Spacer(Modifier.size(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Controlar estoque", color = Ink, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Text("Baixa automática ao confirmar", color = Muted, fontSize = 14.sp)
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChange,
+                colors = SwitchDefaults.colors(checkedTrackColor = Cobalt, checkedThumbColor = Color.White),
+            )
+        }
+
+        AnimatedVisibility(
+            visible = enabled,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 15.dp)) {
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFFE2DFDC)))
+                Spacer(Modifier.height(14.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    InventoryNumberField(
+                        label = "Quantidade atual",
+                        value = stockQuantity,
+                        onValueChange = onStockQuantityChange,
+                        placeholder = "30",
+                        modifier = Modifier.weight(1f),
+                    )
+                    InventoryNumberField(
+                        label = "Por dose",
+                        value = unitsPerDose,
+                        onValueChange = onUnitsPerDoseChange,
+                        placeholder = "1",
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                LabeledField("Unidade do estoque", stockUnit, onStockUnitChange, "Ex.: comprimidos")
+                Spacer(Modifier.height(12.dp))
+                InventoryNumberField(
+                    label = "Avisar quando restarem",
+                    value = lowStockThreshold,
+                    onValueChange = onLowStockThresholdChange,
+                    placeholder = "5",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Ao desmarcar uma dose, a quantidade descontada volta para o estoque.",
+                    color = Muted,
+                    fontSize = 14.sp,
+                    lineHeight = 18.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun InventoryNumberField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier,
+) {
+    Column(modifier) {
+        FieldLabel(label)
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = { Text(placeholder, color = Color(0xFF9A9A9A)) },
+            textStyle = androidx.compose.ui.text.TextStyle(fontFamily = HoraCertaFont, color = Ink, fontSize = 21.sp, fontWeight = FontWeight.Bold),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().height(60.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = fieldColors(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         )
     }
 }
@@ -311,8 +452,15 @@ private fun IntervalPanel(interval: Int, onInterval: (Int) -> Unit, firstTime: S
 }
 
 @Composable
-private fun FixedTimesPanel(times: List<Int>, onTimes: (List<Int>) -> Unit, input: String, onInput: (String) -> Unit, mask: Int, onMask: (Int) -> Unit) {
-    val parsedInput = parseMinutes(input)
+private fun FixedTimesPanel(
+    times: List<Int>,
+    onTimes: (List<Int>) -> Unit,
+    input: TextFieldValue,
+    onInput: (TextFieldValue) -> Unit,
+    mask: Int,
+    onMask: (Int) -> Unit,
+) {
+    val parsedInput = parseMinutes(input.text)
     val canAddTime = parsedInput != null && parsedInput !in times
 
     Column(Modifier.fillMaxWidth().border(1.dp, Color(0xFFD7D5D2), RoundedCornerShape(13.dp)).padding(13.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -326,7 +474,19 @@ private fun FixedTimesPanel(times: List<Int>, onTimes: (List<Int>) -> Unit, inpu
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(value = input, onValueChange = { onInput(normalizeTimeInput(it)) }, placeholder = { Text("HH:MM") }, singleLine = true, modifier = Modifier.weight(1f).height(58.dp), shape = RoundedCornerShape(12.dp), colors = fieldColors(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            OutlinedTextField(
+                value = input,
+                onValueChange = { proposed ->
+                    val normalized = normalizeTimeInput(proposed.text)
+                    onInput(TextFieldValue(normalized, TextRange(normalized.length)))
+                },
+                placeholder = { Text("HH:MM") },
+                singleLine = true,
+                modifier = Modifier.weight(1f).height(58.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = fieldColors(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            )
             Spacer(Modifier.size(10.dp))
             Box(
                 Modifier
@@ -334,7 +494,7 @@ private fun FixedTimesPanel(times: List<Int>, onTimes: (List<Int>) -> Unit, inpu
                     .background(if (canAddTime) Cobalt else Color(0xFFB8C8DC), CircleShape)
                     .clickable(enabled = canAddTime) {
                         onTimes((times + requireNotNull(parsedInput)).sorted())
-                        onInput("")
+                        onInput(TextFieldValue(""))
                     },
                 contentAlignment = Alignment.Center,
             ) {
@@ -410,6 +570,7 @@ private fun parseLocalTime(text: String): LocalTime? {
     return runCatching { LocalTime.of(parts[0].toInt(), parts[1].toInt()) }.getOrNull()
 }
 private fun normalizeTimeInput(value: String): String { val digits = value.filter(Char::isDigit).take(4); return if (digits.length <= 2) digits else digits.take(2) + ":" + digits.drop(2) }
+private fun normalizeWholeNumber(value: String): String = value.filter(Char::isDigit).take(6)
 private fun formatMinutes(minutes: Int): String = "%02d:%02d".format(minutes / 60, minutes % 60)
 private fun formatTime(time: LocalTime): String = "%02d:%02d".format(time.hour, time.minute)
 

@@ -1,5 +1,6 @@
 .gradle/
 .idea/
+.impeccable/
 .android-sdk/
 .android-avd/
 .android-user/

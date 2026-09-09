@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,6 +29,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,6 +44,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Inventory2
 import androidx.compose.material.icons.rounded.Medication
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
@@ -51,14 +55,17 @@ import androidx.compose.material.icons.rounded.Undo
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -79,6 +86,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.thiagoventura.horacerta.R
@@ -327,7 +335,19 @@ private fun TimelineRow(dose: DoseWithMedication, index: Int, lastIndex: Int, on
         Spacer(Modifier.size(8.dp))
         Column(Modifier.weight(1f)) {
             Text(dose.medication.name, color = Ink, fontSize = 18.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (taken) Text("Tomado${dose.occurrence.takenAt?.let { " às ${formatTime(it)}" }.orEmpty()}", color = Cobalt, fontSize = 14.sp)
+            val confirmation = if (taken) "Tomado${dose.occurrence.takenAt?.let { " às ${formatTime(it)}" }.orEmpty()}" else null
+            val stock = dose.medication.takeIf(Medication::inventoryEnabled)?.let {
+                formatStockQuantity(it.stockQuantity, it.stockUnit)
+            }
+            if (confirmation != null || stock != null) {
+                Text(
+                    listOfNotNull(confirmation, stock).joinToString(" • "),
+                    color = if (!taken && dose.medication.stockQuantity <= dose.medication.lowStockThreshold) Warning else Cobalt,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         StatusPill(if (taken) "Tomado" else if (isNow) "Agora" else "Pendente", if (taken || isNow) CobaltSoft else Color(0xFFE7E7E7))
     }
@@ -446,6 +466,7 @@ private fun MedicationsScreen(controller: MainController) {
                 onEdit = { controller.openEditor(medication) },
                 onDelete = { pendingDelete = medication },
                 onToggle = { controller.toggleMedicationActive(medication) },
+                onRestock = { controller.openInventory(medication) },
             )
         }
     }
@@ -458,16 +479,39 @@ private fun MedicationsScreen(controller: MainController) {
             dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancelar") } },
         )
     }
+    controller.inventoryMedication?.let { medication ->
+        InventoryRestockSheet(
+            medication = medication,
+            onDismiss = controller::closeInventory,
+            onAdd = { controller.addStock(medication, it) },
+        )
+    }
 }
 
 @Composable
-private fun MedicationPanel(medication: Medication, onEdit: () -> Unit, onDelete: () -> Unit, onToggle: () -> Unit) {
+private fun MedicationPanel(
+    medication: Medication,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onToggle: () -> Unit,
+    onRestock: () -> Unit,
+) {
     var menuExpanded by remember { mutableStateOf(false) }
     val schedule = when (medication.scheduleKind) {
         ScheduleKind.FIXED_TIMES -> medication.timesMinutes.sorted().joinToString(" e ") { "%02d:%02d".format(it / 60, it % 60) }
         ScheduleKind.INTERVAL -> "A cada ${medication.intervalHours} horas"
     }
-    Row(Modifier.fillMaxWidth().height(150.dp).shadow(6.dp, RoundedCornerShape(18.dp)).background(Color.White, RoundedCornerShape(18.dp)).clickable(onClick = onEdit).padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .animateContentSize()
+            .heightIn(min = if (medication.inventoryEnabled) 202.dp else 166.dp)
+            .shadow(6.dp, RoundedCornerShape(18.dp))
+            .background(Color.White, RoundedCornerShape(18.dp))
+            .clickable(onClick = onEdit)
+            .padding(15.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Box(Modifier.size(62.dp).background(CobaltSoft, RoundedCornerShape(15.dp)), contentAlignment = Alignment.Center) { PillMark(Modifier.size(width = 28.dp, height = 42.dp)) }
         Spacer(Modifier.size(18.dp))
         Column(Modifier.weight(1f)) {
@@ -492,13 +536,151 @@ private fun MedicationPanel(medication: Medication, onEdit: () -> Unit, onDelete
             }
             Text(medication.dosage, color = Muted, fontSize = 20.sp)
             Text(if (medication.scheduleKind == ScheduleKind.FIXED_TIMES) "Todos os dias • $schedule" else schedule, color = Cobalt, fontSize = 16.sp, maxLines = 1)
+            if (medication.inventoryEnabled) {
+                InventoryStatusRow(medication, onRestock)
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                Row(Modifier.border(1.5.dp, Cobalt, RoundedCornerShape(14.dp)).clickable(onClick = onToggle).padding(horizontal = 13.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier
+                        .height(48.dp)
+                        .border(1.5.dp, Cobalt, RoundedCornerShape(14.dp))
+                        .clickable(onClick = onToggle)
+                        .padding(horizontal = 13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Icon(if (medication.active) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null, tint = Cobalt, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.size(6.dp))
                     Text(if (medication.active) "Pausar" else "Ativar", color = Cobalt, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun InventoryStatusRow(medication: Medication, onRestock: () -> Unit) {
+    val statusColor = when {
+        medication.stockQuantity == 0 -> Danger
+        medication.stockQuantity <= medication.lowStockThreshold -> Warning
+        else -> Success
+    }
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Inventory2, null, tint = statusColor, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.size(7.dp))
+        Text(
+            inventoryStatusText(medication),
+            color = statusColor,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Row(
+            Modifier
+                .height(48.dp)
+                .clip(RoundedCornerShape(13.dp))
+                .clickable(onClick = onRestock)
+                .padding(horizontal = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Add, null, tint = Cobalt, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.size(4.dp))
+            Text("Repor", color = Cobalt, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InventoryRestockSheet(
+    medication: Medication,
+    onDismiss: () -> Unit,
+    onAdd: (Int) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var quantity by remember(medication.id) { mutableStateOf("") }
+    val amount = quantity.toIntOrNull()?.takeIf { it > 0 }
+    val afterRestock = medication.stockQuantity + (amount ?: 0)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = Ivory,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(start = 22.dp, end = 22.dp, bottom = 24.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(48.dp).background(CobaltSoft, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Inventory2, null, tint = Cobalt, modifier = Modifier.size(27.dp))
+                }
+                Spacer(Modifier.size(13.dp))
+                Column {
+                    Text("Repor estoque", color = Ink, fontSize = 27.sp, fontWeight = FontWeight.Bold)
+                    Text(medication.name, color = Muted, fontSize = 17.sp)
+                }
+            }
+            Spacer(Modifier.height(22.dp))
+            Text(
+                "Agora: ${formatStockQuantity(medication.stockQuantity, medication.stockUnit)}",
+                color = Ink,
+                fontSize = 19.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = quantity,
+                onValueChange = { quantity = it.filter(Char::isDigit).take(6) },
+                label = { Text("Quantidade a adicionar") },
+                placeholder = { Text("Ex.: 30") },
+                suffix = { Text(medication.stockUnit, color = Muted) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth().height(66.dp),
+                shape = RoundedCornerShape(13.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Cobalt,
+                    unfocusedBorderColor = Color(0xFFCECBC8),
+                    focusedContainerColor = Color.White,
+                    unfocusedContainerColor = Color.White,
+                ),
+            )
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                listOf(10, 20, 30).forEach { quickAmount ->
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .border(1.dp, Cobalt, RoundedCornerShape(13.dp))
+                            .clickable { quantity = quickAmount.toString() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("+$quickAmount", color = Cobalt, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            Text(
+                "Depois: ${formatStockQuantity(afterRestock, medication.stockUnit)}",
+                color = if (amount == null) Muted else Success,
+                fontSize = 17.sp,
+            )
+            Spacer(Modifier.height(18.dp))
+            GradientPrimaryButton(
+                text = "Adicionar ao estoque",
+                enabled = amount != null,
+                onClick = { amount?.let(onAdd) },
+                modifier = Modifier.fillMaxWidth(),
+                leading = { Icon(Icons.Rounded.Add, null, tint = Color.White, modifier = Modifier.size(23.dp)) },
+            )
         }
     }
 }
@@ -791,6 +973,23 @@ private fun EmptyMedicationState(onAdd: () -> Unit) {
 
 private fun doseTime(dose: DoseWithMedication): String = formatTime(dose.occurrence.scheduledAt)
 private fun formatTime(millis: Long): String = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalTime().format(TimeFormat)
+
+private fun inventoryStatusText(medication: Medication): String = when {
+    medication.stockQuantity == 0 -> "Sem ${medication.stockUnit}"
+    medication.stockQuantity <= medication.lowStockThreshold ->
+        "${formatStockQuantity(medication.stockQuantity, medication.stockUnit)} • estoque baixo"
+    else -> "${formatStockQuantity(medication.stockQuantity, medication.stockUnit)} restantes"
+}
+
+private fun formatStockQuantity(quantity: Int, unit: String): String {
+    val normalized = unit.trim().ifBlank { "unidades" }
+    val displayUnit = if (quantity == 1 && normalized.endsWith("s", ignoreCase = true)) {
+        normalized.dropLast(1)
+    } else {
+        normalized
+    }
+    return "$quantity $displayUnit"
+}
 
 private fun DoseWithMedication.toAlarmPayload() = AlarmPayload(
     occurrenceId = occurrence.id,

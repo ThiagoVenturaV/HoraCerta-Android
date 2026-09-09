@@ -79,6 +79,9 @@ class MedicationRepository(context: Context) {
     fun markTaken(id: Long, taken: Boolean) = database.setTaken(id, taken)
 
     @Synchronized
+    fun addStock(medicationId: Long, quantity: Int) = database.addStock(medicationId, quantity)
+
+    @Synchronized
     fun incrementSnooze(id: Long) = database.incrementSnooze(id)
 
     @Synchronized

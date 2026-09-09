@@ -6,8 +6,8 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
-class HoraCertaDatabase(context: Context) :
-    SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
+class HoraCertaDatabase(context: Context, databaseName: String = DATABASE_NAME) :
+    SQLiteOpenHelper(context, databaseName, null, DATABASE_VERSION) {
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -31,7 +31,12 @@ class HoraCertaDatabase(context: Context) :
                 end_epoch_day INTEGER,
                 sound INTEGER NOT NULL,
                 vibration INTEGER NOT NULL,
-                active INTEGER NOT NULL
+                active INTEGER NOT NULL,
+                inventory_enabled INTEGER NOT NULL DEFAULT 0,
+                stock_quantity INTEGER NOT NULL DEFAULT 0,
+                units_per_dose INTEGER NOT NULL DEFAULT 1,
+                low_stock_threshold INTEGER NOT NULL DEFAULT 5,
+                stock_unit TEXT NOT NULL DEFAULT 'unidades'
             )
             """.trimIndent()
         )
@@ -44,6 +49,7 @@ class HoraCertaDatabase(context: Context) :
                 status TEXT NOT NULL DEFAULT 'PENDING',
                 taken_at INTEGER,
                 snooze_count INTEGER NOT NULL DEFAULT 0,
+                inventory_consumed INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(medication_id, scheduled_at),
                 FOREIGN KEY(medication_id) REFERENCES medications(id) ON DELETE CASCADE
             )
@@ -53,7 +59,16 @@ class HoraCertaDatabase(context: Context) :
         db.execSQL("CREATE INDEX idx_occurrences_status ON occurrences(status)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE medications ADD COLUMN inventory_enabled INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE medications ADD COLUMN stock_quantity INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE medications ADD COLUMN units_per_dose INTEGER NOT NULL DEFAULT 1")
+            db.execSQL("ALTER TABLE medications ADD COLUMN low_stock_threshold INTEGER NOT NULL DEFAULT 5")
+            db.execSQL("ALTER TABLE medications ADD COLUMN stock_unit TEXT NOT NULL DEFAULT 'unidades'")
+            db.execSQL("ALTER TABLE occurrences ADD COLUMN inventory_consumed INTEGER NOT NULL DEFAULT 0")
+        }
+    }
 
     fun insertMedication(medication: Medication): Long {
         return writableDatabase.insertOrThrow("medications", null, medication.toValues())
@@ -117,6 +132,7 @@ class HoraCertaDatabase(context: Context) :
         val sql = """
             SELECT o.id AS o_id, o.medication_id AS o_medication_id, o.scheduled_at AS o_scheduled_at,
                    o.status AS o_status, o.taken_at AS o_taken_at, o.snooze_count AS o_snooze_count,
+                   o.inventory_consumed AS o_inventory_consumed,
                    m.*
             FROM occurrences o
             JOIN medications m ON m.id = o.medication_id
@@ -134,6 +150,7 @@ class HoraCertaDatabase(context: Context) :
         val sql = """
             SELECT o.id AS o_id, o.medication_id AS o_medication_id, o.scheduled_at AS o_scheduled_at,
                    o.status AS o_status, o.taken_at AS o_taken_at, o.snooze_count AS o_snooze_count,
+                   o.inventory_consumed AS o_inventory_consumed,
                    m.*
             FROM occurrences o
             JOIN medications m ON m.id = o.medication_id
@@ -151,6 +168,7 @@ class HoraCertaDatabase(context: Context) :
         val sql = """
             SELECT o.id AS o_id, o.medication_id AS o_medication_id, o.scheduled_at AS o_scheduled_at,
                    o.status AS o_status, o.taken_at AS o_taken_at, o.snooze_count AS o_snooze_count,
+                   o.inventory_consumed AS o_inventory_consumed,
                    m.*
             FROM occurrences o JOIN medications m ON m.id = o.medication_id
             WHERE o.id = ?
@@ -167,11 +185,60 @@ class HoraCertaDatabase(context: Context) :
     }
 
     fun setTaken(id: Long, taken: Boolean, now: Long = System.currentTimeMillis()) {
-        val values = ContentValues().apply {
-            put("status", if (taken) DoseStatus.TAKEN.name else DoseStatus.PENDING.name)
-            if (taken) put("taken_at", now) else putNull("taken_at")
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val sql = """
+                SELECT o.status, o.inventory_consumed, o.medication_id,
+                       m.inventory_enabled, m.stock_quantity, m.units_per_dose
+                FROM occurrences o
+                JOIN medications m ON m.id = o.medication_id
+                WHERE o.id = ?
+            """.trimIndent()
+            val state = db.rawQuery(sql, arrayOf(id.toString())).use { cursor ->
+                if (!cursor.moveToFirst()) null else TakenState(
+                    status = DoseStatus.valueOf(cursor.getString(0)),
+                    inventoryConsumed = cursor.getInt(1),
+                    medicationId = cursor.getLong(2),
+                    inventoryEnabled = cursor.getInt(3) == 1,
+                    stockQuantity = cursor.getInt(4),
+                    unitsPerDose = cursor.getInt(5).coerceAtLeast(1),
+                )
+            }
+            if (state == null || (taken && state.status == DoseStatus.TAKEN) || (!taken && state.status == DoseStatus.PENDING)) {
+                db.setTransactionSuccessful()
+                return
+            }
+
+            val consumed = if (taken && state.inventoryEnabled) {
+                minOf(state.stockQuantity.coerceAtLeast(0), state.unitsPerDose)
+            } else {
+                0
+            }
+            if (taken && consumed > 0) {
+                updateStock(db, state.medicationId, state.stockQuantity - consumed)
+            } else if (!taken && state.inventoryConsumed > 0) {
+                updateStock(db, state.medicationId, state.stockQuantity + state.inventoryConsumed)
+            }
+
+            val values = ContentValues().apply {
+                put("status", if (taken) DoseStatus.TAKEN.name else DoseStatus.PENDING.name)
+                if (taken) put("taken_at", now) else putNull("taken_at")
+                put("inventory_consumed", if (taken) consumed else 0)
+            }
+            db.update("occurrences", values, "id = ?", arrayOf(id.toString()))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
-        writableDatabase.update("occurrences", values, "id = ?", arrayOf(id.toString()))
+    }
+
+    fun addStock(medicationId: Long, quantity: Int) {
+        if (quantity <= 0) return
+        writableDatabase.execSQL(
+            "UPDATE medications SET stock_quantity = MAX(0, stock_quantity + ?) WHERE id = ?",
+            arrayOf<Any>(quantity, medicationId),
+        )
     }
 
     fun incrementSnooze(id: Long) {
@@ -194,6 +261,11 @@ class HoraCertaDatabase(context: Context) :
         put("sound", sound.asInt())
         put("vibration", vibration.asInt())
         put("active", active.asInt())
+        put("inventory_enabled", inventoryEnabled.asInt())
+        put("stock_quantity", stockQuantity.coerceAtLeast(0))
+        put("units_per_dose", unitsPerDose.coerceAtLeast(1))
+        put("low_stock_threshold", lowStockThreshold.coerceAtLeast(0))
+        put("stock_unit", stockUnit.trim().ifBlank { "unidades" })
     }
 
     private fun Cursor.toMedication(): Medication = Medication(
@@ -210,6 +282,11 @@ class HoraCertaDatabase(context: Context) :
         sound = getInt(column("sound")) == 1,
         vibration = getInt(column("vibration")) == 1,
         active = getInt(column("active")) == 1,
+        inventoryEnabled = getInt(column("inventory_enabled")) == 1,
+        stockQuantity = getInt(column("stock_quantity")),
+        unitsPerDose = getInt(column("units_per_dose")),
+        lowStockThreshold = getInt(column("low_stock_threshold")),
+        stockUnit = getString(column("stock_unit")),
     )
 
     private fun Cursor.toDoseWithMedication() = DoseWithMedication(
@@ -220,6 +297,7 @@ class HoraCertaDatabase(context: Context) :
             status = DoseStatus.valueOf(getString(column("o_status"))),
             takenAt = getNullableLong(column("o_taken_at")),
             snoozeCount = getInt(column("o_snooze_count")),
+            inventoryConsumed = getInt(column("o_inventory_consumed")),
         ),
         medication = toMedication(),
     )
@@ -228,8 +306,22 @@ class HoraCertaDatabase(context: Context) :
     private fun Cursor.getNullableLong(index: Int) = if (isNull(index)) null else getLong(index)
     private fun Boolean.asInt() = if (this) 1 else 0
 
+    private fun updateStock(db: SQLiteDatabase, medicationId: Long, quantity: Int) {
+        val values = ContentValues().apply { put("stock_quantity", quantity.coerceAtLeast(0)) }
+        db.update("medications", values, "id = ?", arrayOf(medicationId.toString()))
+    }
+
+    private data class TakenState(
+        val status: DoseStatus,
+        val inventoryConsumed: Int,
+        val medicationId: Long,
+        val inventoryEnabled: Boolean,
+        val stockQuantity: Int,
+        val unitsPerDose: Int,
+    )
+
     companion object {
         private const val DATABASE_NAME = "hora_certa.db"
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 2
     }
 }

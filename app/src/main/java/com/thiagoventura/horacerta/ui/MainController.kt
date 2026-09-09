@@ -25,6 +25,7 @@ class MainController(private val app: HoraCertaApplication) {
     var editorVisible by mutableStateOf(false)
     var historyVisible by mutableStateOf(false)
     var historyDoses by mutableStateOf(emptyList<DoseWithMedication>())
+    var inventoryMedication by mutableStateOf<Medication?>(null)
     var dataRevision by mutableStateOf(0)
         private set
 
@@ -68,6 +69,21 @@ class MainController(private val app: HoraCertaApplication) {
 
     fun closeHistory() {
         historyVisible = false
+    }
+
+    fun openInventory(medication: Medication) {
+        inventoryMedication = medication
+    }
+
+    fun closeInventory() {
+        inventoryMedication = null
+    }
+
+    fun addStock(medication: Medication, quantity: Int) {
+        if (quantity <= 0) return
+        app.repository.addStock(medication.id, quantity)
+        closeInventory()
+        refresh()
     }
 
     fun saveMedication(medication: Medication) {
