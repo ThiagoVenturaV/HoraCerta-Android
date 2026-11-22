@@ -1,6 +1,6 @@
 # Chave de assinatura do Hora Certa
 
-Os arquivos `horacerta-release.jks` e `keystore.properties` são criados localmente e não devem ser publicados nem enviados para terceiros.
+O arquivo `horacerta-release.jks` contém a chave privada protegida por senha (formato PKCS#12). Guarde uma cópia em armazenamento privado. O arquivo local `keystore.properties` contém a senha de assinatura e deve ser guardado separadamente, em um gerenciador de senhas ou backup criptografado. Os dois arquivos ficam fora do repositório do aplicativo.
 
-Faça um backup seguro dos dois arquivos. Toda atualização futura do APK precisa ser assinada com a mesma chave; sem ela, o Android não aceitará a atualização sobre uma instalação existente.
+Para recuperar o ambiente de release, restaure os dois arquivos nesta pasta. O processo de build exige a chave existente e não cria uma substituta automaticamente. Toda atualização de uma instalação existente precisa usar a mesma chave de assinatura.
 

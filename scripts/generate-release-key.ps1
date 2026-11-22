@@ -30,16 +30,22 @@ $keytoolPath = if ($env:JAVA_HOME) {
 if (-not (Test-Path -LiteralPath $keytoolPath)) {
     throw 'keytool.exe nao foi encontrado ao lado do Java instalado.'
 }
-& $keytoolPath `
-    -genkeypair `
-    -keystore $keyStorePath `
-    -storepass $password `
-    -keypass $password `
-    -alias 'horacerta' `
-    -keyalg RSA `
-    -keysize 4096 `
-    -validity 10000 `
-    -dname 'CN=Hora Certa, OU=Mobile, O=Thiago Ventura, L=Recife, ST=Pernambuco, C=BR'
+$env:HORACERTA_KEYSTORE_GENERATION_PASSWORD = $password
+try {
+    & $keytoolPath `
+        -genkeypair `
+        -keystore $keyStorePath `
+        -storetype PKCS12 `
+        -storepass:env HORACERTA_KEYSTORE_GENERATION_PASSWORD `
+        -alias 'horacerta' `
+        -keyalg RSA `
+        -keysize 4096 `
+        -validity 10000 `
+        -dname 'CN=Hora Certa, OU=Mobile, O=Thiago Ventura, L=Recife, ST=Pernambuco, C=BR'
+    if ($LASTEXITCODE -ne 0) { throw 'Nao foi possivel gerar a chave de assinatura.' }
+} finally {
+    Remove-Item Env:HORACERTA_KEYSTORE_GENERATION_PASSWORD
+}
 
 $properties = @(
     'storeFile=signing/horacerta-release.jks'

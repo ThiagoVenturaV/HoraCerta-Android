@@ -10,7 +10,7 @@ $emulator = Join-Path $sdkRoot 'emulator\emulator.exe'
 $adb = Join-Path $sdkRoot 'platform-tools\adb.exe'
 $apk = Join-Path $projectRoot 'release\HoraCerta-v0.1.0.apk'
 $avdName = 'HoraCerta_Pixel7_API36'
-$packageName = 'com.thiagoventura.horacerta'
+$packageName = 'com.thiagoventura.horacerta.app'
 
 if (-not (Test-Path -LiteralPath $emulator)) { throw 'Android Emulator nao encontrado.' }
 if (-not (Test-Path -LiteralPath $adb)) { throw 'ADB nao encontrado.' }
@@ -52,5 +52,5 @@ if (-not $installed) {
     if ($LASTEXITCODE -ne 0) { throw 'Nao foi possivel instalar o Hora Certa.' }
 }
 
-& $adb -s $serial shell am start -n "$packageName/.MainActivity" | Out-Null
+& $adb -s $serial shell am start -n "$packageName/com.thiagoventura.horacerta.MainActivity" | Out-Null
 

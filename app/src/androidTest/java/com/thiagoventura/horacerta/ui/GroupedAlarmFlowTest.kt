@@ -1,6 +1,10 @@
 package com.thiagoventura.horacerta.ui
 
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationManager
 import android.content.Intent
+import android.os.Build
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -12,8 +16,11 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.thiagoventura.horacerta.alarm.ActiveAlarmStore
 import com.thiagoventura.horacerta.alarm.AlarmContract
 import com.thiagoventura.horacerta.alarm.AlarmPayload
+import com.thiagoventura.horacerta.alarm.AlarmRingingService
 import com.thiagoventura.horacerta.alarm.putPayload
 import org.junit.After
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,7 +35,49 @@ class GroupedAlarmFlowTest {
     @After
     fun cleanUp() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
+        context.stopService(AlarmRingingService.stopIntent(context))
         ActiveAlarmStore(context).removeAll(occurrenceIds)
+    }
+
+    @Test
+    fun dismissingNotificationKeepsDoseReviewAccessibleWithoutFullScreenAlert() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            instrumentation.uiAutomation.grantRuntimePermission(
+                context.packageName, Manifest.permission.POST_NOTIFICATIONS,
+            )
+        }
+        val payload = payload(occurrenceIds.first(), "Dose de teste", System.currentTimeMillis())
+        val notifications = context.getSystemService(NotificationManager::class.java)
+        val intent = Intent(context, AlarmActivity::class.java).apply {
+            putPayload(payload)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        fun currentNotification() = notifications.activeNotifications
+            .firstOrNull { it.notification.channelId == AlarmRingingService.CHANNEL_ID }
+            ?.notification
+
+        ActivityScenario.launch<AlarmActivity>(intent).use { scenario ->
+            scenario.onActivity { activity ->
+                activity.startForegroundService(Intent(activity, AlarmRingingService::class.java).apply {
+                    putPayload(payload)
+                })
+            }
+            composeRule.waitUntil(timeoutMillis = 5_000) { currentNotification() != null }
+            val original = checkNotNull(currentNotification())
+            // Exercise the same PendingIntent Android sends when the card is swiped away.
+            checkNotNull(original.deleteIntent).send()
+            composeRule.waitUntil(timeoutMillis = 5_000) {
+                currentNotification()?.let { it.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0 } == true
+            }
+            assertNull(currentNotification()?.fullScreenIntent)
+            assertNotNull(currentNotification()?.contentIntent)
+            assertNotNull(currentNotification()?.deleteIntent)
+
+            context.stopService(AlarmRingingService.stopIntent(context))
+            composeRule.waitUntil(timeoutMillis = 5_000) { currentNotification() == null }
+        }
     }
 
     @Test

@@ -24,6 +24,7 @@ class AlarmRingingService : Service() {
     private var vibrator: Vibrator? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var vibrationActive = false
+    private var sessionActive = false
     private val activeAlarmStore by lazy { ActiveAlarmStore(this) }
 
     override fun onCreate() {
@@ -32,6 +33,16 @@ class AlarmRingingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_NOTIFICATION_DISMISSED) {
+            val payloads = if (sessionActive) activeAlarmStore.payloads() else emptyList()
+            if (payloads.isEmpty()) {
+                stopSelf(startId)
+            } else {
+                silenceAlarm()
+                startForeground(NOTIFICATION_ID, buildNotification(payloads, restored = true))
+            }
+            return START_NOT_STICKY
+        }
         if (intent?.action == AlarmContract.ACTION_STOP_RINGING) {
             stopSelf()
             return START_NOT_STICKY
@@ -39,6 +50,7 @@ class AlarmRingingService : Service() {
 
         val payload = intent?.toPayload() ?: return START_NOT_STICKY
         activeAlarmStore.add(payload)
+        sessionActive = true
         sendBroadcast(Intent(AlarmContract.ACTION_ACTIVE_ALARMS_CHANGED).setPackage(packageName))
         val payloads = activeAlarmStore.payloads().ifEmpty { listOf(payload) }
         acquireWakeLock()
@@ -49,16 +61,21 @@ class AlarmRingingService : Service() {
     }
 
     override fun onDestroy() {
+        silenceAlarm()
+        super.onDestroy()
+    }
+
+    private fun silenceAlarm() {
         ringtone?.stop()
+        ringtone = null
         vibrator?.cancel()
         vibrationActive = false
         if (wakeLock?.isHeld == true) wakeLock?.release()
-        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun buildNotification(payloads: List<AlarmPayload>): Notification {
+    private fun buildNotification(payloads: List<AlarmPayload>, restored: Boolean = false): Notification {
         val payload = payloads.first()
         val count = payloads.size
         val alarmIntent = Intent(this, AlarmActivity::class.java).apply {
@@ -72,7 +89,13 @@ class AlarmRingingService : Service() {
             alarmIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val dismissPendingIntent = PendingIntent.getService(
+            this,
+            NOTIFICATION_ID,
+            Intent(this, AlarmRingingService::class.java).setAction(ACTION_NOTIFICATION_DISMISSED),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(if (count == 1) "Hora do medicamento" else "Hora de $count medicamentos")
             .setContentText(notificationText(payloads))
@@ -82,8 +105,13 @@ class AlarmRingingService : Service() {
             .setOngoing(true)
             .setAutoCancel(false)
             .setContentIntent(fullScreenPendingIntent)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
-            .build()
+            .setDeleteIntent(dismissPendingIntent)
+        if (restored) {
+            notification.setSilent(true).setOnlyAlertOnce(true)
+        } else {
+            notification.setFullScreenIntent(fullScreenPendingIntent, true)
+        }
+        return notification.build()
     }
 
     private fun startSound() {
@@ -147,6 +175,8 @@ class AlarmRingingService : Service() {
     companion object {
         const val CHANNEL_ID = "medication_alarms_v1"
         private const val NOTIFICATION_ID = 4107
+        private const val ACTION_NOTIFICATION_DISMISSED =
+            "com.thiagoventura.horacerta.NOTIFICATION_DISMISSED"
 
         fun stopIntent(context: android.content.Context) =
             Intent(context, AlarmRingingService::class.java).setAction(AlarmContract.ACTION_STOP_RINGING)
